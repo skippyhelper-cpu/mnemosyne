@@ -11,15 +11,15 @@ Store, search, and reason over your agent's conversation history using vector si
 │  Mnemosyne Memory Stack                                 │
 │                                                         │
 │  ┌─────────────┐   ┌─────────────┐   ┌──────────────┐  │
-│  │   sqlite-vec │   │    Kuzu     │   │   SQLite     │  │
-│  │   (ANN + FTS│ + │ (Knowledge   │ + │  (relational │  │
-│  │    hybrid)  │   │    Graph)    │   │   + FTS5)    │  │
+│  │  sqlite-vec │ + │    Kuzu     │ + │   SQLite     │  │
+│  │  (ANN + FTS│   │ (Knowledge   │   │  (relational │  │
+│  │   hybrid)   │   │    Graph)    │   │  + FTS5)    │  │
 │  └─────────────┘   └─────────────┘   └──────────────┘  │
 │       vectors           graph            metadata        │
 │                                                         │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │           Self-Learning (SHAKE-256 cache)         │   │
-│  │   query receipts → hot-vector boost + synthesis  │   │
+│  │        Self-Learning (SHAKE-256 cache)           │   │
+│  │  query receipts → hot-vector boost + synthesis   │   │
 │  └──────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -29,80 +29,92 @@ Store, search, and reason over your agent's conversation history using vector si
 - **Kuzu** — Property graph for entities, topics, session relationships, and correction tracking
 - **SQLite + FTS5** — Relational metadata storage with full-text search
 
-## Components
+## Features
 
-| Component | Purpose |
-|-----------|---------|
-| `sqlite-vec` | Vector embeddings (FastEmbed/BGE-M3) + ANN index + FTS5 keyword |
-| `Kuzu` | Knowledge graph: entities, topics, session relationships, corrections |
-| `SelfLearningManager` | Query cache (SHAKE-256), hot-vector session promotion, pattern synthesis |
-| `MCP server` | Model Context Protocol tools for hermes-agent integration |
-| `importers/` | Import from OpenClaw, Hermes SQLite, Notion, Google Drive |
+- **Auto-setup** — runs automatically on first use, no manual configuration
+- **Incremental sync** — new sessions indexed every 30 min via hermes-agent cron job
+- **Privacy controls** — opt in/out of each data source via config file
+- **Hybrid search** — combines semantic (vector) + keyword (FTS5) for accurate results
+- **Knowledge graph** — entity extraction, topic tracking, correction tracking
+- **Self-learning** — SHAKE-256 query cache, hot-vector session boosting
 
 ## Quick Start
 
-### Prebuilt Binary (fastest)
-
 ```bash
-# Download from GitHub Releases
-chmod +x mnemosyne
-./mnemosyne stats
-./mnemosyne search "what did we discuss about solar"
-```
+pip install mnemosyne-memory[vec]
 
-### Python Package
+# First run — auto-setup runs automatically (indexes all sessions)
+mnemosyne search "what did we discuss about solar"
 
-```bash
-pip install mnemosyne-memory
+# Check sync status
+mnemosyne sync --check
 
-# Set data directory
-export MNEMOSYNE_HOME=~/.mnemosyne
-
-mnemosyne stats
-mnemosyne search "your query"
-```
-
-### From Source
-
-```bash
-git clone https://github.com/NousResearch/mnemosyne.git
-cd mnemosyne
-pip install -e ".[vec]"
-
-export MNEMOSYNE_HOME=~/.mnemosyne
+# See statistics
 mnemosyne stats
 ```
 
-## Configuration
+That's it. Setup is automatic. New sessions are picked up every 30 minutes.
 
-| Env Variable | Default | Description |
-|---|---|---|
-| `MNEMOSYNE_HOME` | `~/.hermes/mnemosyne` | Data directory |
-| `MNEMOSYNE_MODEL` | `BAAI/bge-m3` | Embedding model |
-| `MNEMOSYNE_EMBED_DIM` | `1024` | Embedding dimension |
-| `MNEMOSYNE_FTS_LANGUAGE` | `english` | FTS5 language |
+## Data Sources
+
+Mnemosyne can sync from multiple sources. By default it auto-detects what's installed:
+
+| Source | Default | Config key |
+|--------|---------|------------|
+| Hermes-agent sessions (`~/.hermes/state.db`) | **On** | `hermes` |
+| OpenClaw sessions (`~/.openclaw/agents/*/sessions/`) | Auto (on if dir exists) | `openclaw` |
+
+### Privacy Controls
+
+Edit `~/.config/mnemosyne/sources.toml` to enable/disable sources:
+
+```toml
+[sources]
+openclaw = false   # disable if not installed or not wanted
+hermes = true      # default on
+```
+
+Mnemosyne creates this file automatically on first run.
 
 ## CLI Commands
 
 ```bash
 mnemosyne search "query"              # Semantic + keyword search
 mnemosyne stats                        # Show index sizes and stats
-mnemosyne context <session_id>        # Get entities + relationships for a session
-mnemosyne import --db <path>          # Import from Hermes SQLite
+mnemosyne context <session_id>         # Get entities + relationships
+mnemosyne sync                         # Run incremental sync now
+mnemosyne sync --check                 # Show sync status (no changes)
+mnemosyne sync --source hermes         # Sync only hermes
+mnemosyne setup                        # Re-run setup (sync + cron registration)
 ```
 
 ## MCP Tools (for hermes-agent)
 
-When used as an MCP server:
-- `mnemosyne__search` — Semantic search across sessions
+When connected as an MCP server, four tools are available:
+
+- `mnemosyne__search` — Hybrid semantic + keyword search across sessions
 - `mnemosyne__get_context` — Get entities + relationships for a session
-- `mnemosyne__synthesize` — Trigger pattern synthesis
-- `mnemosyne__cache_stats` — Show query cache stats
+- `mnemosyne__get_related` — Find related sessions via knowledge graph
+- `mnemosyne__stats` — Show index sizes and cache statistics
+
+## Configuration
+
+| Env Variable | Default | Description |
+|---|---|---|
+| `MNEMOSYNE_HOME` | `~/.hermes/mnemosyne` | Data directory |
+
+Most settings are auto-configured. To override embedding model or dimension, see `mnemosyne/core/config.py`.
 
 ## Data Storage
 
-- `~/.hermes/mnemosyne/mnemosyne.db` — SQLite with sqlite-vec + FTS5
-- `~/.hermes/mnemosyne/graph.kuzu` — Kuzu graph database
+```
+~/.hermes/mnemosyne/
+├── mnemosyne.db         # SQLite with sqlite-vec + FTS5
+└── graph.kuzu           # Kuzu graph database
+
+~/.config/mnemosyne/
+└── sources.toml         # Data source configuration
+```
 
 ## License
 
