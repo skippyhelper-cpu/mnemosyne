@@ -9,6 +9,8 @@ Supports two sources:
   - openclaw:  ~/.openclaw/agents/*/sessions/*.jsonl
   - hermes:    ~/.hermes/state.db sessions
 
+Privacy: sources can be disabled via ~/.config/mnemosyne/sources.toml
+
 Usage:
   python -m mnemosyne.scripts.sync --source openclaw
   python -m mnemosyne.scripts.sync --source hermes
@@ -37,6 +39,75 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("sync")
+
+
+# ---------------------------------------------------------------------------
+# Config file: ~/.config/mnemosyne/sources.toml
+# ---------------------------------------------------------------------------
+
+import tomllib
+
+DEFAULT_SOURCES_TOML = """
+# Mnemosyne data source configuration
+# Set a source to false to disable indexing from that source.
+
+[sources]
+# OpenClaw session files (~/.openclaw/agents/*/sessions/)
+openclaw = true
+
+# Hermes-agent SQLite state.db
+hermes = true
+"""
+
+def _get_sources_config() -> dict[str, bool]:
+    """
+    Load source config from ~/.config/mnemosyne/sources.toml.
+    Creates the file with defaults if it doesn't exist.
+    Auto-disables openclaw if ~/.openclaw/agents/ doesn't exist.
+    """
+    config_dir = Path.home() / ".config" / "mnemosyne"
+    config_file = config_dir / "sources.toml"
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    defaults = {
+        "openclaw": (Path.home() / ".openclaw" / "agents").exists(),
+        "hermes": True,
+    }
+
+    if config_file.exists():
+        try:
+            with open(config_file, "rb") as f:
+                data = tomllib.load(f)
+            sources = data.get("sources", {})
+            return {
+                "openclaw": sources.get("openclaw", defaults["openclaw"]),
+                "hermes": sources.get("hermes", defaults["hermes"]),
+            }
+        except Exception as e:
+            logger.warning(f"Could not parse {config_file}: {e}, using defaults")
+
+    # Create default config
+    try:
+        with open(config_file, "w") as f:
+            f.write(DEFAULT_SOURCES_TOML.strip())
+        logger.info(f"Created default sources config at {config_file}")
+        logger.info("  Edit this file to enable/disable data sources")
+    except Exception as e:
+        logger.warning(f"Could not create {config_file}: {e}")
+
+    return defaults
+
+
+def _source_enabled(name: str, args, config: dict) -> bool:
+    """Check if a source is enabled (config flag + --include override)."""
+    # CLI flag forces inclusion
+    include_flag = getattr(args, f"include_{name}", None)
+    if include_flag:
+        return True
+    # Config flag
+    if not config.get(name, True):
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +472,7 @@ def main():
         "--source",
         choices=["openclaw", "hermes", "all"],
         default="all",
-        help="Which source to sync (default: all)",
+        help="Which source to sync (default: all, respects sources.toml)",
     )
     parser.add_argument(
         "--agents-dir",
@@ -433,6 +504,16 @@ def main():
         help="Only process files modified after this Unix timestamp",
     )
     parser.add_argument(
+        "--include-openclaw",
+        action="store_true",
+        help="Include OpenClaw even if disabled in sources.toml",
+    )
+    parser.add_argument(
+        "--include-hermes",
+        action="store_true",
+        help="Include Hermes even if disabled in sources.toml",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true", help="Verbose output"
     )
     args = parser.parse_args()
@@ -444,6 +525,31 @@ def main():
     data_dir = Path(config.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    # Load source config
+    sources_cfg = _get_sources_config()
+    enabled = {
+        "openclaw": _source_enabled("openclaw", args, sources_cfg),
+        "hermes": _source_enabled("hermes", args, sources_cfg),
+    }
+
+    # Resolve which sources to actually sync
+    requested = args.source  # 'openclaw' | 'hermes' | 'all'
+    to_sync = []
+    if requested == "all":
+        if enabled["openclaw"]:
+            to_sync.append("openclaw")
+        if enabled["hermes"]:
+            to_sync.append("hermes")
+    elif requested == "openclaw" and enabled["openclaw"]:
+        to_sync = ["openclaw"]
+    elif requested == "hermes" and enabled["hermes"]:
+        to_sync = ["hermes"]
+    # else: source disabled by config, silently skip
+
+    if not to_sync:
+        logger.info("No sources enabled — nothing to sync")
+        return 0
+
     # Check mode: just report what would be synced
     if args.check:
         last_ts = _get_last_sync_timestamp(data_dir)
@@ -453,31 +559,30 @@ def main():
             logger.info(f"Last sync: {dt_str} (Unix {last_ts})")
         else:
             logger.info("No previous sync found — full sync needed")
+        logger.info(f"Sources to sync: {', '.join(to_sync)}")
         return 0
 
-    # Incremental vs full
-    if args.source in ("openclaw", "all"):
-        last_ts = _get_last_sync_timestamp(data_dir)
-        sync_ts = args.since if args.since is not None else last_ts
-        logger.info(
-            f"Syncing OpenClaw (since={sync_ts or 'full scan'})"
-        )
-        result = sync_openclaw(
-            agents_dir=args.agents_dir,
-            since=sync_ts,
-            limit=args.limit,
-            verbose=args.verbose,
-        )
-        # Record successful sync timestamp
-        if result["indexed"] > 0 or result["total"] > 0:
-            _set_last_sync_timestamp(data_dir, time.time())
+    # Run enabled sources
+    for source in to_sync:
+        if source == "openclaw":
+            last_ts = _get_last_sync_timestamp(data_dir)
+            sync_ts = args.since if args.since is not None else last_ts
+            logger.info(f"Syncing OpenClaw (since={sync_ts or 'full scan'})")
+            result = sync_openclaw(
+                agents_dir=args.agents_dir,
+                since=sync_ts,
+                limit=args.limit,
+                verbose=args.verbose,
+            )
+            if result["indexed"] > 0 or result["total"] > 0:
+                _set_last_sync_timestamp(data_dir, time.time())
 
-    if args.source in ("hermes", "all"):
-        logger.info("Syncing Hermes sessions")
-        result = sync_hermes(
-            db_path=args.hermes_db,
-            verbose=args.verbose,
-        )
+        elif source == "hermes":
+            logger.info("Syncing Hermes sessions")
+            result = sync_hermes(
+                db_path=args.hermes_db,
+                verbose=args.verbose,
+            )
 
     return 0
 
