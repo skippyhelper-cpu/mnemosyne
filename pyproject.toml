@@ -11,13 +11,12 @@ license = {text = "MIT"}
 authors = [
     {name = "Filip", email = "filip@filspire.com"}
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
@@ -37,8 +36,8 @@ vec = [
 mnemosyne = "mnemosyne.queries.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/NousResearch/mnemosyne"
-Repository = "https://github.com/NousResearch/mnemosyne"
+Homepage = "https://github.com/skippyhelper-cpu/mnemosyne"
+Repository = "https://github.com/skippyhelper-cpu/mnemosyne"
 
 [tool.setuptools.packages.find]
 where = ["."]
